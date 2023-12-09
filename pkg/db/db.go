@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 	"golang.org/x/xerrors"
@@ -58,7 +59,70 @@ type Operation interface {
 type Config struct {
 }
 
-func Init(cacheDir string) (err error) {
+type BoltOptions struct {
+	// Timeout is the amount of time to wait to obtain a file lock.
+	// When set to zero it will wait indefinitely. This option is only
+	// available on Darwin and Linux.
+	Timeout time.Duration
+
+	// Sets the DB.NoGrowSync flag before memory mapping the file.
+	NoGrowSync bool
+
+	// Do not sync freelist to disk. This improves the database write performance
+	// under normal operation, but requires a full database re-sync during recovery.
+	NoFreelistSync bool
+
+	// PreLoadFreelist sets whether to load the free pages when opening
+	// the db file. Note when opening db in write mode, bbolt will always
+	// load the free pages.
+	PreLoadFreelist bool
+
+	// Open database in read-only mode. Uses flock(..., LOCK_SH |LOCK_NB) to
+	// grab a shared lock (UNIX).
+	ReadOnly bool
+
+	// Sets the DB.MmapFlags flag before memory mapping the file.
+	MmapFlags int
+
+	// InitialMmapSize is the initial mmap size of the database
+	// in bytes. Read transactions won't block write transaction
+	// if the InitialMmapSize is large enough to hold database mmap
+	// size. (See DB.Begin for more information)
+	//
+	// If <=0, the initial map size is 0.
+	// If initialMmapSize is smaller than the previous database size,
+	// it takes no effect.
+	InitialMmapSize int
+
+	// PageSize overrides the default OS page size.
+	PageSize int
+
+	// NoSync sets the initial value of DB.NoSync. Normally this can just be
+	// set directly on the DB itself when returned from Open(), but this option
+	// is useful in APIs which expose Options but not the underlying DB.
+	NoSync bool
+
+	// OpenFile is used to open files. It defaults to os.OpenFile. This option
+	// is useful for writing hermetic tests.
+	OpenFile func(string, int, os.FileMode) (*os.File, error)
+
+	// Mlock locks database file in memory when set to true.
+	// It prevents potential page faults, however
+	// used memory can't be reclaimed. (UNIX only)
+	Mlock bool
+
+	Enable bool
+}
+
+func GetBoltOptions(options BoltOptions) *bolt.Options {
+	if options.Enable {
+		return &bolt.Options{
+			ReadOnly: options.ReadOnly,
+		}
+	}
+	return nil
+}
+func Init(cacheDir string, options BoltOptions) (err error) {
 	dbPath := Path(cacheDir)
 	dbDir = filepath.Dir(dbPath)
 	if err = os.MkdirAll(dbDir, 0700); err != nil {
@@ -78,7 +142,8 @@ func Init(cacheDir string) (err error) {
 		debug.SetPanicOnFault(false)
 	}()
 
-	db, err = bolt.Open(dbPath, 0600, nil)
+	boltOptions := GetBoltOptions(options)
+	db, err = bolt.Open(dbPath, 0600, boltOptions)
 	if err != nil {
 		return xerrors.Errorf("failed to open db: %w", err)
 	}
